@@ -3,30 +3,57 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from typing import TYPE_CHECKING
 
-from nix_update.utils import info
-
 from .http import DEFAULT_TIMEOUT, urlopen
+from .version import Version
 
 if TYPE_CHECKING:
     from urllib.parse import ParseResult
 
-    from .version import Version
+
+def _local_name(name: str) -> str:
+    return name.rsplit("}", 1)[-1]
+
+
+def _child_text(element: ET.Element, name: str) -> str | None:
+    for child in element:
+        if _local_name(child.tag) == name and child.text:
+            return child.text.strip()
+    return None
+
+
+def _attr(element: ET.Element, name: str) -> str | None:
+    for attr_name, value in element.attrib.items():
+        if _local_name(attr_name) == name:
+            return value
+    return None
+
+
+def _version_from_item(item: ET.Element) -> Version | None:
+    version = _child_text(item, "shortVersionString") or _child_text(item, "version")
+    if version is not None:
+        return Version(version)
+
+    for enclosure in item.findall("{*}enclosure"):
+        version = _attr(enclosure, "shortVersionString") or _attr(enclosure, "version")
+        if version is not None:
+            return Version(version)
+
+    return None
 
 
 def fetch_sparkle_versions(url: ParseResult) -> list[Version]:
-    # https://fork.dev/update/feed-stable.xml
-    # if the URL isn't an xml document, it can't be sparkle
-    if not url.path.endswith(".xml"):
+    if url.scheme not in ("http", "https") or not url.path.endswith(".xml"):
         return []
 
     with urlopen(url.geturl(), timeout=DEFAULT_TIMEOUT) as resp:
-        xml = resp.read()
-        info(f"xml: {xml}")
-    tree = ET.fromstring(xml)
+        try:
+            tree = ET.fromstring(resp.read())
+        except ET.ParseError:
+            return []
 
-    # tree.findall("enclosure").sort(key=lambda enc: enc.attrib["sparkle:version"])
-    versions = tree.findall(".//channel/item/enclosure")
-    info(versions)
-    # for enclosure in tree.findall("enclosure"):
-
-    return [versions[0].attrib["sparkle:version"]]
+    versions = []
+    for item in tree.findall(".//{*}item"):
+        version = _version_from_item(item)
+        if version is not None:
+            versions.append(version)
+    return versions
